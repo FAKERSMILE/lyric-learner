@@ -27,8 +27,8 @@
           </div>
 
           <div style="display:flex; gap:10px; margin-top:16px; flex-wrap:wrap">
-            <button class="btn primary" :disabled="collected" @click="collect">
-              {{ collected ? '✓ 已在生词本' : '＋ 收藏到生词本' }}
+            <button class="btn" :class="collected ? 'ghost' : 'primary'" @click="collect">
+              {{ collected ? '✓ 已收藏（点此取消）' : '＋ 收藏到生词本' }}
             </button>
             <button class="btn" @click="markKnown">{{ known ? '取消"我会了"' : '我已掌握（不再高亮）' }}</button>
           </div>
@@ -49,6 +49,7 @@ const dict = ref(null)
 const loading = ref(false)
 const collected = ref(false)
 const known = ref(false)
+const wordbookId = ref(null)
 
 const scopeTags = computed(() => (props.word?.exam || '').split('/').filter(Boolean))
 
@@ -64,6 +65,7 @@ watch(() => props.word, async (w) => {
   if (!w) return
   dict.value = null
   collected.value = !!w.in_wordbook
+  wordbookId.value = w.wordbook_id || null
   known.value = !!w.known
   loading.value = true
   try {
@@ -75,13 +77,26 @@ watch(() => props.word, async (w) => {
 })
 
 async function collect() {
-  await api.post('/api/wordbook', {
-    word: props.word.word,
-    source_song_id: props.songId || null,
-    source_line: props.word.source_line || '',
-  })
-  collected.value = true
-  emit('collected', props.word.word)
+  if (collected.value) {
+    // 取消收藏
+    if (wordbookId.value) {
+      await api.del(`/api/wordbook/${wordbookId.value}`)
+      collected.value = false
+      wordbookId.value = null
+      emit('collected', props.word.word)
+    }
+  } else {
+    const r = await api.post('/api/wordbook', {
+      word: props.word.word,
+      source_song_id: props.songId || null,
+      source_line: props.word.source_line || '',
+    })
+    if (r.ok) {
+      collected.value = true
+      if (r.wid) wordbookId.value = r.wid
+      emit('collected', props.word.word)
+    }
+  }
 }
 
 async function markKnown() {

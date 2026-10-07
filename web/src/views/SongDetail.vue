@@ -11,6 +11,15 @@
 
     <!-- 歌词 -->
     <div class="card" style="margin-bottom:20px">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px">
+        <span class="muted" style="font-size:12px">
+          彩色<b>点线</b>为备考词汇（点击查词）；点击行尾 ＋句 收藏句卡。
+          <template v-if="analyzing"><span class="spin" style="margin-left:8px"></span> AI 分析中…</template>
+        </span>
+        <button class="btn sm ghost" @click="toggleZh">
+          {{ showZh ? '🙈 隐藏译文' : '👁 显示译文' }}
+        </button>
+      </div>
       <div v-for="ln in lines" :key="ln.line_no" class="lyric-line" style="display:flex; align-items:flex-start">
         <div style="flex:1">
           <div>
@@ -18,9 +27,12 @@
               <span v-if="seg.type === 'plain'">{{ seg.text }}</span>
               <span v-else class="w" :class="cls(seg.tok)" @click="openWord(seg.tok, ln)">{{ seg.text }}</span>
             </template>
-            <button class="btn sm ghost" style="margin-left:8px; opacity:.55" @click="collectLine(ln)">＋句</button>
+            <button class="btn sm" :class="ln.sentence_card_id ? 'ghost' : 'primary'"
+                    style="margin-left:8px" @click="toggleSentenceCard(ln)">
+              {{ ln.sentence_card_id ? '✓ 句卡' : '＋句' }}
+            </button>
           </div>
-          <span v-if="zhOf(ln.line_no)" class="zh">{{ zhOf(ln.line_no) }}</span>
+          <span v-if="showZh && zhOf(ln.line_no)" class="zh">{{ zhOf(ln.line_no) }}</span>
           <span v-for="(n, i) in notesOf(ln.line_no)" :key="'n' + i" class="note-chip">✎ {{ n }}</span>
         </div>
       </div>
@@ -57,7 +69,11 @@
           <td class="muted">{{ v.sentence }}</td>
           <td>{{ v.sentence_zh }}<br /><span class="muted">{{ v.meaning }}</span></td>
           <td class="muted">{{ v.root }}<br />{{ v.derivatives }}</td>
-          <td><button class="btn sm" @click="quickAdd(v.word)">收藏</button></td>
+          <td><button class="btn sm"
+              :class="isWordCollected(v.word) ? 'ghost' : ''"
+              @click="toggleWord(v.word, v.sentence)">
+            {{ isWordCollected(v.word) ? '✓ 已收藏' : '收藏' }}
+          </button></td>
         </tr>
       </table>
     </div>
@@ -130,6 +146,7 @@ const analyzing = ref(false)
 const drawerWord = ref(null)
 const tab = ref('vocab')
 const reSec = reactive({ vocab: true, sentences: true, collocations: true, writing: true })
+const showZh = ref(localStorage.getItem('lyric_show_zh') !== '0')  // 默认显示，用户可隐藏
 
 const song = computed(() => detail.value?.song || {})
 const lines = computed(() => detail.value?.lines || [])
@@ -176,7 +193,66 @@ function openWord(tok, ln) {
   drawerWord.value = {
     ...tok,
     in_wordbook: tok.in_wordbook,
+    wordbook_id: tok.wordbook_id || null,
     source_line: ln.text,
+  }
+}
+
+function toggleZh() {
+  showZh.value = !showZh.value
+  localStorage.setItem('lyric_show_zh', showZh.value ? '1' : '0')
+}
+
+function isWordCollected(word) {
+  for (const ln of lines.value)
+    for (const t of ln.tokens)
+      if (t.word === word && t.in_wordbook) return true
+  return false
+}
+
+function findWordbookId(word) {
+  for (const ln of lines.value)
+    for (const t of ln.tokens)
+      if (t.word === word && t.wordbook_id) return t.wordbook_id
+  return null
+}
+
+async function toggleWord(word, sourceLine) {
+  const wid = findWordbookId(word)
+  if (wid && isWordCollected(word)) {
+    await api.del(`/api/wordbook/${wid}`)
+    // 刷新页面拿到最新状态
+    detail.value = await api.get(`/api/songs/${song.value.id}`)
+    notify(`已取消收藏「${word}」`)
+  } else {
+    const r = await api.post('/api/wordbook', {
+      word, source_song_id: song.value.id, source_line: sourceLine || '',
+    })
+    if (r.ok) {
+      // 本地同步 wid，方便后续 toggle
+      for (const ln of lines.value)
+        for (const t of ln.tokens)
+          if (t.word === word) { t.in_wordbook = true; t.wordbook_id = r.wid }
+      notify(`已收藏「${word}」`)
+    }
+  }
+}
+
+async function toggleSentenceCard(ln) {
+  if (ln.sentence_card_id) {
+    await api.del(`/api/sentence-cards/${ln.sentence_card_id}`)
+    ln.sentence_card_id = null
+    notify('已取消收藏句卡')
+  } else {
+    const r = await api.post('/api/sentence-cards', {
+      song_id: song.value.id, line_no: ln.line_no,
+    })
+    if (r.ok) {
+      ln.sentence_card_id = r.id
+      notify('已收藏句卡')
+    } else {
+      notify(r.msg || '收藏失败')
+    }
   }
 }
 
@@ -194,11 +270,6 @@ async function onKnownChanged({ word, known }) {
   notify(known ? `「${word}」已标记掌握，不再高亮` : `「${word}」恢复高亮`)
 }
 
-async function collectLine(ln) {
-  const r = await api.post('/api/sentence-cards', { song_id: song.value.id, line_no: ln.line_no })
-  notify(r.ok ? '已收藏句卡' : (r.msg || '已收藏过'))
-}
-
 async function collectSentenceText(en, zh) {
   // 找到匹配行号收藏；找不到则直接记到该歌最后一行
   let line_no = null
@@ -206,12 +277,6 @@ async function collectSentenceText(en, zh) {
     if (ln.text.includes(en.slice(0, 20)) || en.includes(ln.text.slice(0, 20))) { line_no = ln.line_no; break }
   const r = await api.post('/api/sentence-cards', { song_id: song.value.id, line_no: line_no || 1 })
   notify(r.ok ? '已收藏句卡' : (r.msg || '已收藏过'))
-}
-
-async function quickAdd(word) {
-  await api.post('/api/wordbook', { word, source_song_id: song.value.id })
-  onCollected(word)
-  notify(`已收藏「${word}」`)
 }
 
 async function addKnowledge(kind, title, content = '', example_en = '', example_zh = '') {

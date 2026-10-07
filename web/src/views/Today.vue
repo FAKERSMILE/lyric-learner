@@ -88,13 +88,13 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick, inject } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick, inject } from 'vue'
 import { api } from '../api'
 
 const emit = defineEmits(['due-changed'])
 const notify = inject('notify')
 
-const today = new Date().toISOString().slice(0, 10)
+const today = ref(new Date().toISOString().slice(0, 10))
 const queue = ref([])
 const idx = ref(0)
 const typed = ref('')

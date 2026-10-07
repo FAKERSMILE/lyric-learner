@@ -204,9 +204,11 @@ def add_word(word, lemma, phonetic, translation, exam_scope,
             "source_song_id,source_line) VALUES(?,?,?,?,?,?,?)",
             (word, lemma, phonetic, translation, exam_scope, source_song_id, source_line))
         c.commit()
-        return True
+        return c.execute("SELECT id FROM wordbook WHERE word=?", (word,)).fetchone()[0]
     except sqlite3.IntegrityError:
-        return False
+        # 已存在：直接返回已有 wid
+        row = c.execute("SELECT id FROM wordbook WHERE word=?", (word,)).fetchone()
+        return row[0] if row else None
     finally:
         c.close()
 

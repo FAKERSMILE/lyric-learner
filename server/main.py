@@ -231,9 +231,17 @@ def song_detail(sid: int):
         raise HTTPException(404, "歌曲不存在")
     lines, exam_words = annotate_lines(song["lyrics"])
     wb_words = {w["word"] for w in db.list_wordbook(include_mastered=True)}
+    wb_by_word = {w["word"]: w["id"] for w in db.list_wordbook(include_mastered=True)}
+    # 查该歌已收藏的句卡
+    c = db.conn()
+    sc_rows = c.execute("SELECT line_no, id FROM sentence_cards WHERE song_id=?", (sid,)).fetchall()
+    c.close()
+    sc_map = {r["line_no"]: r["id"] for r in sc_rows}
     for ln in lines:
+        ln["sentence_card_id"] = sc_map.get(ln["line_no"])
         for t in ln["tokens"]:
             t["in_wordbook"] = t["word"] in wb_words
+            t["wordbook_id"] = wb_by_word.get(t["word"])
     mat = db.get_material(sid)
     return {"song": song, "lines": lines, "exam_words": exam_words,
             "material": mat or {"line_zh": [], "sections": {}, "sections_done": []}}
@@ -264,7 +272,9 @@ def add_to_wordbook(w: WordIn):
         source_song_id=w.source_song_id,
         source_line=w.source_line[:200],
     )
-    return {"ok": ok, "msg": "" if ok else "该词已在生词本中"}
+    if ok is None or ok is False:
+        return {"ok": False, "msg": "该词已在生词本中", "wid": None}
+    return {"ok": True, "msg": "", "wid": ok}
 
 
 def _line_text(lyrics: str, line_no: int) -> str:
