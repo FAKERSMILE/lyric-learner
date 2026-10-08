@@ -118,8 +118,8 @@ class RestoreIn(BaseModel):
 # ---------- settings ----------
 @app.get("/api/settings")
 def get_settings():
+    # 安全：不返回明文 kimi_key，只返回 has_key 布尔值
     return {
-        "kimi_key": db.get_setting("kimi_key"),
         "base_url": db.get_setting("base_url", "https://api.moonshot.cn/v1"),
         "model": db.get_setting("model", "auto"),
         "theme": db.get_setting("theme", "midnight"),
@@ -130,8 +130,10 @@ def get_settings():
 @app.post("/api/settings")
 def save_settings(s: SettingsIn):
     for k, v in s.model_dump().items():
-        if k == "kimi_key" and v.startswith("sk-") is False and v != "":
-            pass  # 允许自定义中转 key 原样保存
+        # kimi_key 为空字符串时跳过（用户只想改其他设置时不会误清空）
+        if k == "kimi_key" and v == "":
+            continue
+        # kimi_key 不以 sk- 开头也非空时，原样允许（兼容中转 key）
         db.set_setting(k, v)
     return {"ok": True}
 
@@ -396,6 +398,12 @@ def review_today():
     return {"date": today, "total": total, **due}
 
 
+# ---------- stats ----------
+@app.get("/api/stats")
+def stats():
+    return db.get_stats()
+
+
 @app.post("/api/review/check")
 def review_check(c: CheckIn):
     if c.mode == "sentence":
@@ -415,14 +423,26 @@ def review_answer(a: AnswerIn):
     c.close()
     if not row:
         raise HTTPException(404, "卡片不存在")
-    new_stage, nd = review.schedule(row["stage"], a.result)
+    new_stage, nd, graduated = review.schedule(row["stage"], a.result)
     c = db.conn()
-    c.execute(f"UPDATE {table} SET stage=?, next_date=? WHERE id=?",
-              (new_stage, nd, a.card_id))
+    if graduated:
+        # 自动毕业：标记 mastered + 写入 known_words
+        if a.card_type == "word":
+            c.execute(f"UPDATE {table} SET stage=?, next_date=?, status='mastered' WHERE id=?",
+                      (new_stage, nd, a.card_id))
+            wr = c.execute("SELECT word FROM wordbook WHERE id=?", (a.card_id,)).fetchone()
+            if wr:
+                c.execute("INSERT OR IGNORE INTO known_words(word) VALUES(?)", (wr["word"],))
+        else:
+            c.execute(f"UPDATE {table} SET stage=?, next_date=?, status='mastered' WHERE id=?",
+                      (new_stage, nd, a.card_id))
+    else:
+        c.execute(f"UPDATE {table} SET stage=?, next_date=? WHERE id=?",
+                  (new_stage, nd, a.card_id))
     c.commit()
     c.close()
     db.log_review(a.card_type, a.card_id, a.result, nd)
-    return {"stage": new_stage, "next_date": nd}
+    return {"stage": new_stage, "next_date": nd, "graduated": graduated}
 
 
 # ---------- backup ----------

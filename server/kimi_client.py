@@ -19,7 +19,9 @@ SECTION_KEYS = ["vocab", "sentences", "collocations", "writing"]
 
 
 def _pick_model(total_chars: int) -> str:
-    return "moonshot-v1-8k" if total_chars < 9000 else "moonshot-v1-32k"
+    # moonshot-v1-* 全系 2026-08-31 已下线，改用 kimi-k2.6
+    # kimi-k2.6 性价比高（输入 $0.95/M 输出 $4.00/M），256K 上下文足够歌词场景
+    return "kimi-k2.6"
 
 
 def _client(api_key: str):
@@ -92,8 +94,8 @@ def generate(api_key: str, title: str, artist: str, lyrics: str,
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.3,
-        max_tokens=6000 if model.endswith("32k") else 4000,
+        temperature=1,
+        max_tokens=4000,
         response_format={"type": "json_object"},
     )
     content = resp.choices[0].message.content or "{}"

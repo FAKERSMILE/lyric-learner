@@ -143,10 +143,20 @@ def get_song(sid: int):
 
 def delete_song(sid: int):
     c = conn()
+    # 先收集关联的卡片 ID，级联删 review_log
+    wb_ids = [r[0] for r in c.execute(
+        "SELECT id FROM wordbook WHERE source_song_id=?", (sid,)).fetchall()]
+    sc_ids = [r[0] for r in c.execute(
+        "SELECT id FROM sentence_cards WHERE song_id=?", (sid,)).fetchall()]
+    for wid in wb_ids:
+        c.execute("DELETE FROM review_log WHERE card_type='word' AND card_id=?", (wid,))
+    for cid in sc_ids:
+        c.execute("DELETE FROM review_log WHERE card_type='sentence' AND card_id=?", (cid,))
+    # wordbook 不删除，只解除关联（用户可能想保留学过的词）
+    c.execute("UPDATE wordbook SET source_song_id=NULL WHERE source_song_id=?", (sid,))
     for t in ("materials",):
         c.execute(f"DELETE FROM {t} WHERE song_id=?", (sid,))
     c.execute("DELETE FROM sentence_cards WHERE song_id=?", (sid,))
-    c.execute("UPDATE wordbook SET source_song_id=NULL WHERE source_song_id=?", (sid,))
     c.execute("DELETE FROM songs WHERE id=?", (sid,))
     c.commit()
     c.close()
@@ -169,7 +179,7 @@ def get_material(sid: int):
 def save_line_zh(sid: int, line_zh: list):
     c = conn()
     c.execute(
-        "INSERT INTO materials(song_id,line_zh,updated_at) VALUES(?,datetime('now','localtime')) "
+        "INSERT INTO materials(song_id,line_zh,updated_at) VALUES(?,?,datetime('now','localtime')) "
         "ON CONFLICT(song_id) DO UPDATE SET line_zh=excluded.line_zh,"
         "updated_at=excluded.updated_at",
         (sid, json.dumps(line_zh, ensure_ascii=False)))
@@ -189,7 +199,7 @@ def save_sections(sid: int, sections: dict, done: list):
         "VALUES(?,?,?,datetime('now','localtime')) "
         "ON CONFLICT(song_id) DO UPDATE SET sections=excluded.sections,"
         "sections_done=excluded.sections_done,updated_at=excluded.updated_at",
-        (sid, json.dumps(merged, ensure_ascii=False), json.dumps(done_all)))
+        (sid, json.dumps(merged, ensure_ascii=False), json.dumps(done_all, ensure_ascii=False)))
     c.commit()
     c.close()
 
@@ -206,9 +216,8 @@ def add_word(word, lemma, phonetic, translation, exam_scope,
         c.commit()
         return c.execute("SELECT id FROM wordbook WHERE word=?", (word,)).fetchone()[0]
     except sqlite3.IntegrityError:
-        # 已存在：直接返回已有 wid
-        row = c.execute("SELECT id FROM wordbook WHERE word=?", (word,)).fetchone()
-        return row[0] if row else None
+        # 已存在：返回 False 让调用方知道没新建
+        return False
     finally:
         c.close()
 
@@ -396,3 +405,57 @@ def restore_all(data: dict):
 
 def _columns(c, table):
     return {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+
+
+# ---------- stats ----------
+def get_stats():
+    """学习统计总览：词汇量、复习次数、正确率、打卡日历、连续天数"""
+    c = conn()
+    today = date.today().isoformat()
+
+    # 词汇量
+    total_words = c.execute("SELECT COUNT(*) FROM wordbook").fetchone()[0]
+    mastered_words = c.execute(
+        "SELECT COUNT(*) FROM wordbook WHERE status='mastered'").fetchone()[0]
+    active_words = total_words - mastered_words
+
+    # 总复习次数 + 正确率
+    total_reviews = c.execute("SELECT COUNT(*) FROM review_log").fetchone()[0]
+    correct_reviews = c.execute(
+        "SELECT COUNT(*) FROM review_log WHERE result='remember'").fetchone()[0]
+    accuracy = round(correct_reviews / total_reviews * 100, 1) if total_reviews else 0
+
+    # 打卡日历（近 30 天：某天有复习记录 = 打卡）
+    cal_rows = c.execute(
+        "SELECT substr(reviewed_at,1,10) d, COUNT(*) cnt "
+        "FROM review_log WHERE reviewed_at >= date('now','-30 day') "
+        "GROUP BY d ORDER BY d").fetchall()
+    calendar = {r["d"]: r["cnt"] for r in cal_rows}
+
+    # 连续打卡天数（从今天往前数）
+    from datetime import timedelta
+    all_dates = sorted(calendar.keys(), reverse=True)
+    streak = 0
+    for i, d in enumerate(all_dates):
+        expected = (date.today() - timedelta(days=i)).isoformat()
+        if d == expected:
+            streak += 1
+        else:
+            break
+
+    # 今日到期卡片数
+    due_total = sum(len(v) for v in due_cards(today).values())
+
+    # 歌曲数
+    song_count = c.execute("SELECT COUNT(*) FROM songs").fetchone()[0]
+
+    c.close()
+    return {
+        "today": today,
+        "streak": streak,
+        "due_today": due_total,
+        "songs": song_count,
+        "words": {"total": total_words, "active": active_words, "mastered": mastered_words},
+        "reviews": {"total": total_reviews, "correct": correct_reviews, "accuracy_pct": accuracy},
+        "calendar": calendar,
+    }

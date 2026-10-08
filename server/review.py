@@ -37,21 +37,24 @@ def next_date(stage: int, result: str) -> str:
     if result == "forget":
         return (today + timedelta(days=1)).isoformat()
     if result == "fuzzy":
-        idx = min(stage, len(INTERVALS) - 1)
-    else:  # remember
-        idx = min(stage, len(INTERVALS) - 1)
+        # 模糊记得：短周期 1 天再巩固
+        return (today + timedelta(days=1)).isoformat()
+    # remember：按艾宾浩斯节奏递增
+    idx = min(stage, len(INTERVALS) - 1)
     return (today + timedelta(days=INTERVALS[idx])).isoformat()
 
 
 def schedule(stage: int, result: str):
-    """返回 (new_stage, next_date_str)；stage 达到上限且记得 → 毕业已由调用方处理"""
+    """返回 (new_stage, next_date_str, graduated_bool)；
+    graduated=True 表示已达到长期掌握上限，应标记 mastered"""
     if result == "remember":
         new_stage = min(stage + 1, len(INTERVALS))
     elif result == "fuzzy":
         new_stage = stage
     else:
         new_stage = 0
-    return new_stage, next_date(stage, result)
+    graduated = (result == "remember" and new_stage >= len(INTERVALS))
+    return new_stage, next_date(stage, result), graduated
 
 
 def _norm_word(w: str) -> str:
