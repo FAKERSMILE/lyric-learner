@@ -1,0 +1,88 @@
+name: Daily Health Check
+
+on:
+  schedule:
+    # UTC 00:00 = 北京时间 08:00
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run health check
+        env:
+          PYTHONPATH: server
+        run: |
+          python -c "
+          import sys, os, json, sqlite3
+          from datetime import datetime, timezone
+
+          results = []
+
+          # 1. 关键模块 import 检查
+          try:
+              import db, review, kimi_client, main
+              results.append('✅ 模块 import 全部通过（db/review/kimi_client/main）')
+          except Exception as e:
+              results.append(f'❌ 模块 import 失败: {e}')
+
+          # 2. 数据库初始化检查
+          try:
+              db.init()
+              stats = db.get_stats()
+              results.append(f'✅ 数据库初始化正常，stats 接口返回 {len(stats)} 个字段')
+          except Exception as e:
+              results.append(f'❌ 数据库错误: {e}')
+
+          # 3. 前端 package.json 校验
+          if os.path.exists('web/package.json'):
+              try:
+                  json.load(open('web/package.json', encoding='utf-8'))
+                  results.append('✅ web/package.json 格式正确')
+              except Exception as e:
+                  results.append(f'❌ web/package.json 错误: {e}')
+
+          # 4. 词汇分组 API 路由数量检查
+          try:
+              routes = [r.path for r in main.app.routes if hasattr(r, 'path')]
+              results.append(f'✅ API 路由共 {len(routes)} 个')
+          except Exception as e:
+              results.append(f'❌ 路由检查失败: {e}')
+
+          now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+          log_entry = f'\n## {now}\n\n' + '\n'.join(f'- {r}' for r in results) + '\n'
+
+          log_path = 'HEALTH_LOG.md'
+          if not os.path.exists(log_path):
+              with open(log_path, 'w', encoding='utf-8') as f:
+                  f.write('# LyricLearner 健康日志\n\n每日自动健康检查记录（GitHub Actions 定时任务）。\n\n')
+          with open(log_path, 'a', encoding='utf-8') as f:
+              f.write(log_entry)
+
+          print(log_entry)
+          print(f'\n检查完成，{sum(1 for r in results if r.startswith(\"✅\"))} 通过 / {sum(1 for r in results if r.startswith(\"❌\"))} 失败')
+          "
+
+      - name: Commit health log
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add HEALTH_LOG.md
+          git diff --staged --quiet || git commit -m "chore: 每日健康检查 $(date -u +%Y-%m-%d)"
+          git push
